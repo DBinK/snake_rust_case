@@ -90,9 +90,6 @@ class Game:
         self.phase = Phase.READY
         self.food = self._place_food()
 
-    def is_over(self):
-        return self.phase is Phase.OVER
-
     def head(self):
         return self.body[0]  # ← Rust: *self.body.front().unwrap()
 
