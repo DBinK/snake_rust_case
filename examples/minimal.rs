@@ -1,10 +1,15 @@
-//! 第 03 章：最小可跑版本 —— 一个能用方向键移动的 "@" 字符。
-//! 目标：只学会三件事：进入/退出 raw mode、读键盘事件、把字符画到终端上。
+//! 第 03 章：最小可跑版本 —— 终端交互单字符移动原型。
 //!
-//! 对照 C：raw mode 相当于自己调 termios 关 ICANON/ECHO；
-//! 对照 Python：相当于 curses.noecho() + getch()，但这里是显式的
-//! 资源守卫（`terminal::enable_raw_mode()` 不是 RAII，需要我们手动恢复，
-//! 所以结尾必须配对 disable —— 这也是第 04 章改用 guard 结构的原因）。
+//! 演示终端游戏最核心的三项底层能力：
+//! 1. 切换至 Raw Mode 并建立交替屏幕缓冲区。
+//! 2. 非阻塞或单次阻塞读取键盘事件流。
+//! 3. 定位光标并在指定坐标绘制字符。
+//!
+//! 对照说明：
+//! - C 语言：需要手动调用 termios API 清除 ICANON 与 ECHO 标志位。
+//! - Python：通常依赖 curses 库的 noecho() 与 cbreak()。
+//! - Rust：直接调用 crossterm 提供的声明式 API，但注意手动退出模式存在泄漏风险，
+//!   完整版在第 04 章将进一步升级为 RAII 守卫模式。
 
 use std::io::{self, Write};
 
@@ -16,16 +21,16 @@ use crossterm::{
 };
 
 fn main() -> io::Result<()> {
-    // `?`：出错就把错误传回调用者，类似 Python 的异常向上抛，
-    // 但它是编译期强制处理的 Result，不是运行时可能遗漏的 errno。
+    // 进入 Raw Mode 并切换到交替屏幕缓冲区，隐藏光标以保证画面纯净
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), terminal::EnterAlternateScreen, cursor::Hide)?;
 
     let mut stdout = io::stdout();
-    let (mut x, mut y) = (5u16, 5u16); // u16：坐标类型，负坐标在类型层面就不存在
+    // 使用 u16 无符号整数存储坐标，从类型层面规避负数坐标的发生
+    let (mut x, mut y) = (5u16, 5u16);
 
     loop {
-        // queue! 累积转义序列，flush 一次写出，避免逐字节系统调用
+        // queue! 宏批量写入清屏与光标跳转指令，flush 一次性刷盘，减少系统调用
         queue!(
             stdout,
             terminal::Clear(ClearType::All),
@@ -34,23 +39,23 @@ fn main() -> io::Result<()> {
         stdout.write_all(b"@")?;
         stdout.flush()?;
 
-        // `let Event::Key(key) = ... else`：2024 edition 的 let-else 语法，
-        // “不是按键事件就跳过”，替代嵌套的 if let。
+        // 使用 Rust 2024 let-else 语法过滤非按键事件，早退扁平化分支
         let Event::Key(key) = event::read()? else {
             continue;
         };
+
+        // match 穷尽检查：编译器强制覆盖 KeyCode 的分支处理
         match key.code {
-            // match 必须穷尽所有分支 —— 编译器替你检查“忘了处理的键”
-            KeyCode::Up => y = y.saturating_sub(1), // saturating_sub：减到 0 为止，防下溢
+            KeyCode::Up => y = y.saturating_sub(1), // saturating_sub 达到 0 时自动饱和，防止无符号下溢
             KeyCode::Down => y += 1,
             KeyCode::Left => x = x.saturating_sub(1),
             KeyCode::Right => x += 1,
-            KeyCode::Char('q') | KeyCode::Esc => break, // `|` 模式或
-            _ => {}                                     // `_` 兜底 = C 的 default
+            KeyCode::Char('q') | KeyCode::Esc => break, // 多模式匹配组合
+            _ => {}                                     // 兜底分支忽略其他按键
         }
     }
 
-    // 恢复终端，否则你的 shell 会“坏掉”
+    // 显式恢复终端状态，避免污染外部 Shell 交互环境
     execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()
 }
